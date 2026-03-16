@@ -37,7 +37,7 @@ endforeach()
 
 if(NOT TensorRT_LIBRARY)
     foreach(search ${_TensorRT_SEARCHES})
-        find_library(TensorRT_LIBRARY NAMES nvinfer ${${search}} PATH_SUFFIXES lib)
+        find_library(TensorRT_LIBRARY NAMES nvinfer_10 ${${search}} PATH_SUFFIXES lib)
         if(NOT TensorRT_LIB_DIR)
             get_filename_component(TensorRT_LIB_DIR ${TensorRT_LIBRARY} DIRECTORY)
         endif ()
@@ -46,7 +46,7 @@ endif()
 
 if(NOT TensorRT_nvinfer_plugin_LIBRARY)
     foreach(search ${_TensorRT_SEARCHES})
-        find_library(TensorRT_nvinfer_plugin_LIBRARY NAMES nvinfer_plugin ${${search}} PATH_SUFFIXES lib)
+        find_library(TensorRT_nvinfer_plugin_LIBRARY NAMES nvinfer_plugin_10 ${${search}} PATH_SUFFIXES lib)
     endforeach()
 endif()
 
@@ -87,23 +87,23 @@ if(TensorRT_FOUND)
     endif()
 
     if(NOT TARGET TensorRT::nvinfer)
-        add_library(TensorRT::nvinfer SHARED IMPORTED)
+        add_library(TensorRT::nvinfer_10 SHARED IMPORTED)
         if (WIN32)
             foreach(search ${_TensorRT_SEARCHES})
                 find_file(TensorRT_LIBRARY_DLL
-                        NAMES nvinfer.dll
+                        NAMES nvinfer_10.dll
                         PATHS ${${search}}
                         PATH_SUFFIXES bin
                 )
             endforeach()
 
-            set_target_properties(TensorRT::nvinfer PROPERTIES
+            set_target_properties(TensorRT::nvinfer_10 PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${TensorRT_INCLUDE_DIRS}"
                     IMPORTED_LOCATION "${TensorRT_LIBRARY_DLL}"
                     IMPORTED_IMPLIB "${TensorRT_LIBRARY}"
             )
         else()
-            set_target_properties(TensorRT::nvinfer PROPERTIES
+            set_target_properties(TensorRT::nvinfer_10 PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${TensorRT_INCLUDE_DIRS}"
                     IMPORTED_LOCATION "${TensorRT_LIBRARY}"
             )
@@ -111,24 +111,24 @@ if(TensorRT_FOUND)
         target_link_libraries(TensorRT INTERFACE TensorRT::nvinfer)
     endif()
 
-    if(NOT TARGET TensorRT::nvinfer_plugin AND TensorRT_nvinfer_plugin_LIBRARY)
-        add_library(TensorRT::nvinfer_plugin SHARED IMPORTED)
+    if(NOT TARGET TensorRT::nvinfer_plugin_10 AND TensorRT_nvinfer_plugin_LIBRARY)
+        add_library(TensorRT::nvinfer_plugin_10 SHARED IMPORTED)
         if (WIN32)
             foreach(search ${_TensorRT_SEARCHES})
                 find_file(TensorRT_nvinfer_plugin_LIBRARY_DLL
-                        NAMES nvinfer_plugin.dll
+                        NAMES nvinfer_plugin_10.dll
                         PATHS ${${search}}
                         PATH_SUFFIXES bin
                 )
             endforeach()
 
-            set_target_properties(TensorRT::nvinfer_plugin PROPERTIES
+            set_target_properties(TensorRT::nvinfer_plugin_10 PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${TensorRT_INCLUDE_DIRS}"
                     IMPORTED_LOCATION "${TensorRT_nvinfer_plugin_LIBRARY_DLL}"
                     IMPORTED_IMPLIB "${TensorRT_nvinfer_plugin_LIBRARY}"
             )
         else()
-            set_target_properties(TensorRT::nvinfer_plugin PROPERTIES
+            set_target_properties(TensorRT::nvinfer_plugin_10 PROPERTIES
                     INTERFACE_INCLUDE_DIRECTORIES "${TensorRT_INCLUDE_DIRS}"
                     IMPORTED_LOCATION "${TensorRT_nvinfer_plugin_LIBRARY}"
             )

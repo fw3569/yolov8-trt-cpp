@@ -1,7 +1,12 @@
 cmake_minimum_required(VERSION 3.12)
 
-set(CMAKE_CUDA_ARCHITECTURES 60 61 62 70 72 75 86 89 90)
-set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc)
+set(CMAKE_CUDA_HOST_COMPILER "D:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe")
+set(CMAKE_CXX_COMPILER "D:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe")
+set(CMAKE_CUDA_COMPILER "nvcc")
+set(CMAKE_CUDA_ARCHITECTURES 75)
+set(OpenCV_DIR "D:/ProgramData/OpenCV/opencv/build")
+set(TensorRT_ROOT "D:/Program Files/NVIDIA GPU Computing Toolkit/TensorRT/TensorRT-10.15.1.29")
+add_definitions(-DNOMINMAX)
 
 project(yolov8 LANGUAGES CXX CUDA)
 
@@ -31,10 +36,11 @@ find_package(TensorRT REQUIRED)
 print_var(TensorRT_LIBRARIES)
 print_var(TensorRT_INCLUDE_DIRS)
 print_var(TensorRT_LIB_DIR)
-if (TensorRT_VERSION_MAJOR GREATER_EQUAL 10)
-    message(STATUS "Build with -DTRT_10")
-    add_definitions(-DTRT_10)
-endif ()
+add_definitions(-DTRT_10)
+# if (TensorRT_VERSION_MAJOR GREATER_EQUAL 10)
+#     message(STATUS "Build with -DTRT_10")
+#     add_definitions(-DTRT_10)
+# endif ()
 
 list(APPEND ALL_INCLUDE_DIRS
         ${CUDA_INCLUDE_DIRS}
@@ -62,6 +68,7 @@ print_var(ALL_LIB_DIRS)
 add_executable(
         ${PROJECT_NAME}
         ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/preprocess.cu
         ${CMAKE_CURRENT_SOURCE_DIR}/include/yolov8.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/common.hpp
 )
