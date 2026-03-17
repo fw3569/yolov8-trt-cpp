@@ -1,260 +1,202 @@
-# YOLOv8-TensorRT
+# YOLOv8 TensorRT C++ 推理引擎
 
-`YOLOv8` using TensorRT accelerate !
-
----
-[![Build Status](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Factions-badge.atrox.dev%2Fatrox%2Fsync-dotenv%2Fbadge&style=flat)](https://github.com/triple-Mu/YOLOv8-TensorRT)
-[![Python Version](https://img.shields.io/badge/Python-3.8--3.10-FFD43B?logo=python)](https://github.com/triple-Mu/YOLOv8-TensorRT)
-[![img](https://badgen.net/badge/icon/tensorrt?icon=azurepipelines&label)](https://developer.nvidia.com/tensorrt)
-[![C++](https://img.shields.io/badge/CPP-11%2F14-yellow)](https://github.com/triple-Mu/YOLOv8-TensorRT)
-[![img](https://badgen.net/github/license/triple-Mu/YOLOv8-TensorRT)](https://github.com/triple-Mu/YOLOv8-TensorRT/blob/main/LICENSE)
-[![img](https://badgen.net/github/prs/triple-Mu/YOLOv8-TensorRT)](https://github.com/triple-Mu/YOLOv8-TensorRT/pulls)
-[![img](https://img.shields.io/github/stars/triple-Mu/YOLOv8-TensorRT?color=ccf)](https://github.com/triple-Mu/YOLOv8-TensorRT)
+基于 TensorRT C++ API 实现的 YOLOv8 目标检测推理引擎，包含完整的 CUDA 前处理、解码、NMS 以及双缓冲流水线优化。
 
 ---
 
+## 项目简介
 
-# Prepare the environment
+本项目在 [triple-Mu/YOLOv8-TensorRT](https://github.com/triple-Mu/YOLOv8-TensorRT) 的基础上，独立实现了以下优化：
 
-1. Install `CUDA` follow [`CUDA official website`](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#download-the-nvidia-cuda-toolkit).
+- **CUDA letterbox 前处理 kernel**：将图像缩放、灰边填充、BGR→RGB、归一化、HWC→CHW 五步合一，替代 OpenCV CPU 实现
+- **CUDA decode kernel**：并行解析 TensorRT 原始输出 `[1, 84, 8400]`，使用 `atomicAdd` 并行写入结果
+- **CUDA NMS kernel**：替代 CPU 串行 NMS
+- **双缓冲流水线**：GPU 推理与下一帧 CPU imread 并行执行
+- **CUDA Graph**：将整帧推理流程录制为 Graph 一次提交，降低帧间延迟抖动
+- **Pinned Memory**：使用页锁定内存加速 D2H 数据传输
 
-   🚀 RECOMMENDED `CUDA` >= 11.4
+---
 
-2. Install `TensorRT` follow [`TensorRT official website`](https://developer.nvidia.com/nvidia-tensorrt-8x-download).
+## 性能对比
 
-   🚀 RECOMMENDED `TensorRT` >= 8.4
+测试环境：NVIDIA MX450，CUDA 12.4，TensorRT 10.15.1，Windows 11
 
-2. Install python requirements.
+### 前处理耗时
 
-   ``` shell
-   pip install -r requirements.txt
-   ```
+| 版本 | 前处理耗时 | 说明 |
+|------|-----------|------|
+| OpenCV CPU letterbox | ~1.6ms | 原始版本 |
+| CUDA kernel（含 malloc） | ~1.7ms | 无收益，malloc 开销抵消 |
+| CUDA kernel（预分配显存） | ~0.5ms | **提升 3x** |
 
-3. Install [`ultralytics`](https://github.com/ultralytics/ultralytics) package for ONNX export or TensorRT API building.
+### 批量推理吞吐（测试6张图片）
 
-   ``` shell
-   pip install ultralytics
-   ```
+| 版本 | 总耗时 | 每张均值 | 说明 |
+|------|--------|---------|------|
+| 串行原版 | ~105ms | ~17.5ms | baseline |
+| 双缓冲 | ~75ms | ~12.5ms | 提升 29% |
+| 双缓冲 + 异步 imread | ~65ms | ~10.8ms | 提升 38% |
+| + CUDA Graph | ~65ms | ~10.8ms | 延迟抖动明显降低 |
 
-5. Prepare your own PyTorch weight such as `yolov8s.pt` or `yolov8s-seg.pt`.
+> 注：MX450 上瓶颈为 cv::imread（~10ms），GPU 推理（~5ms）已被完全掩盖。CUDA Graph 主要收益为降低帧间抖动而非平均耗时。
 
-***NOTICE:***
+### Nsight Systems Profiling
 
-Please use the latest `CUDA` and `TensorRT`, so that you can achieve the fastest speed !
+- letterbox CUDA kernel 占 GPU 总耗时约 **0.5%**，前处理不再是瓶颈
+- 推理瓶颈为 TensorRT 内部 kernel（约 99.5%），已由 TensorRT 自动优化
 
-If you have to use a lower version of `CUDA` and `TensorRT`, please read the relevant issues carefully !
+---
 
-# Normal Usage
+## 环境要求
 
-If you get ONNX from origin [`ultralytics`](https://github.com/ultralytics/ultralytics) repo, you should build engine by yourself.
+| 依赖 | 版本 |
+|------|------|
+| CUDA | 12.4 |
+| TensorRT | 10.x（zip 包，含头文件） |
+| OpenCV | 4.x |
+| CMake | 3.12+ |
+| MSVC | VS 2022 |
 
-You can only use the `c++` inference code to deserialize the engine and do inference.
+---
 
-You can get more information in [`Normal.md`](docs/Normal.md) !
+## 编译步骤
 
-Besides, other scripts won't work.
+### 1. 导出模型
 
-# Export End2End ONNX with NMS
+```bash
+# 依赖项
+# ultralytics  
+# onxx  
+# onnxsim  
+# onxxslim  
+# onnxruntime-gpu  
+# tensorrt_cu12  
+# tensorrt_cu12_bindings  
+# tensorrt_cu12_libs  
+# torch  
+# opencv-python  
+# nvidia-cudnn-cu12  
+# nvidia-cublas-cu12  
+# 等其他常见库不一一列出如报缺少自行安装
 
-You can export your onnx model by `ultralytics` API and add postprocess such as bbox decoder and `NMS` into ONNX model at the same time.
+# End2End 模式（含 NMS，对应 main.cpp）
+python export-det.py \
+    --weights yolov8n.pt \
+    --iou-thres 0.65 \
+    --conf-thres 0.25 \
+    --topk 100 \
+    --opset 11 \
+    --sim \
+    --input-shape 1 3 640 640 \
+    --device cuda:0
 
-``` shell
-python3 export-det.py \
---weights yolov8s.pt \
---iou-thres 0.65 \
---conf-thres 0.25 \
---topk 100 \
---opset 11 \
---sim \
---input-shape 1 3 640 640 \
---device cuda:0
+# 转换 TensorRT Engine
+python build.py \
+    --weights yolov8n.onnx \
+    --iou-thres 0.65 \
+    --conf-thres 0.25 \
+    --topk 100 \
+    --fp16 \
+    --device cuda:0
+
+# Normal 模式（不含 NMS，对应 main_normal.cpp）
+python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', opset=11, simplify=False)"
+
+# 用 trtexec 转换
+trtexec --onnx=yolov8n.onnx --saveEngine=yolov8n_normal.engine --fp16
 ```
 
-#### Description of all arguments
+### 2. 编译
 
-- `--weights` : The PyTorch model you trained.
-- `--iou-thres` : IOU threshold for NMS plugin.
-- `--conf-thres` : Confidence threshold for NMS plugin.
-- `--topk` : Max number of detection bboxes.
-- `--opset` : ONNX opset version, default is 11.
-- `--sim` : Whether to simplify your onnx model.
-- `--input-shape` : Input shape for you model, should be 4 dimensions.
-- `--device` : The CUDA deivce you export engine .
+在`csrc/detect/end2end`中修改你的cuda和msvc编译器的位置
 
-You will get an onnx model whose prefix is the same as input weights.
+在 **x64 Native Tools Command Prompt for VS 2022** 中执行：
 
-# Build End2End Engine from ONNX
-### 1. Build Engine by TensorRT ONNX Python api
-
-You can export TensorRT engine from ONNX by [`build.py` ](build.py).
-
-Usage:
-
-``` shell
-python3 build.py \
---weights yolov8s.onnx \
---iou-thres 0.65 \
---conf-thres 0.25 \
---topk 100 \
---fp16  \
---device cuda:0
-```
-
-#### Description of all arguments
-
-- `--weights` : The ONNX model you download.
-- `--iou-thres` : IOU threshold for NMS plugin.
-- `--conf-thres` : Confidence threshold for NMS plugin.
-- `--topk` : Max number of detection bboxes.
-- `--fp16` : Whether to export half-precision engine.
-- `--device` : The CUDA deivce you export engine .
-
-You can modify `iou-thres` `conf-thres` `topk` by yourself.
-
-### 2. Export Engine by Trtexec Tools
-
-You can export TensorRT engine by [`trtexec`](https://github.com/NVIDIA/TensorRT/tree/main/samples/trtexec) tools.
-
-Usage:
-
-``` shell
-/usr/src/tensorrt/bin/trtexec \
---onnx=yolov8s.onnx \
---saveEngine=yolov8s.engine \
---fp16
-```
-
-**If you installed TensorRT by a debian package, then the installation path of `trtexec`
-is `/usr/src/tensorrt/bin/trtexec`**
-
-**If you installed TensorRT by a tar package, then the installation path of `trtexec` is under the `bin` folder in the path you decompressed**
-
-# Build TensorRT Engine by TensorRT API
-
-Please see more information in [`API-Build.md`](docs/API-Build.md)
-
-***Notice !!!*** We don't support YOLOv8-seg model now !!!
-
-# Inference
-
-## 1. Infer with python script
-
-You can infer images with the engine by [`infer-det.py`](infer-det.py) .
-
-Usage:
-
-``` shell
-python3 infer-det.py \
---engine yolov8s.engine \
---imgs data \
---show \
---out-dir outputs \
---device cuda:0
-```
-
-#### Description of all arguments
-
-- `--engine` : The Engine you export.
-- `--imgs` : The images path you want to detect.
-- `--show` : Whether to show detection results.
-- `--out-dir` : Where to save detection results images. It will not work when use `--show` flag.
-- `--device` : The CUDA deivce you use.
-- `--profile` : Profile the TensorRT engine.
-
-## 2. Infer with C++
-
-You can infer with c++ in [`csrc/detect/end2end`](csrc/detect/end2end) .
-
-### Build:
-
-Please set you own librarys in [`CMakeLists.txt`](csrc/detect/end2end/CMakeLists.txt) and modify `CLASS_NAMES` and `COLORS` in [`main.cpp`](csrc/detect/end2end/main.cpp).
-
-``` shell
-export root=${PWD}
+```bash
 cd csrc/detect/end2end
-mkdir -p build && cd build
-cmake ..
-make
-mv yolov8 ${root}
-cd ${root}
+mkdir build && cd build
+
+cmake .. \
+    -DTensorRT_ROOT="path/to/TensorRT" \
+    -DOpenCV_DIR="path/to/opencv" \
+    -DCMAKE_CUDA_ARCHITECTURES=your_architectures
+
+cmake --build . --config Release
 ```
 
-Usage:
+> **注意**：
+> - `TensorRT_ROOT` 指向解压后的 TensorRT zip 目录（需包含 `include/` 和 `lib/`）
+> - `CMAKE_CUDA_ARCHITECTURES` 根据你的 GPU 设置（MX450 为 75，RTX 30xx 为 86）
+> - 需要将 TensorRT/bin 和 OpenCV/bin 加入 PATH 或复制到 exe 同目录
 
-``` shell
-# infer image
-./yolov8 yolov8s.engine data/bus.jpg
-# infer images
-./yolov8 yolov8s.engine data
-# infer video
-./yolov8 yolov8s.engine data/test.mp4 # the video path
+### 3. 运行
+
+```bash
+cd build/Release
+
+# End2End 版本（baseline）
+yolov8.exe path/to/yolov8n.engine path/to/image_or_dir
+
+# 优化版本（CUDA 全流程 + CUDA Graph）
+yolov8_normal.exe path/to/yolov8n_normal.engine path/to/image_or_dir
 ```
 
-# TensorRT Segment Deploy
+---
 
-Please see more information in [`Segment.md`](docs/Segment.md)
+## 文件结构
 
-# TensorRT Pose Deploy
-
-Please see more information in [`Pose.md`](docs/Pose.md)
-
-# TensorRT Cls Deploy
-
-Please see more information in [`Cls.md`](docs/Cls.md)
-
-# TensorRT Obb Deploy
-
-Please see more information in [`Obb.md`](docs/Obb.md)
-
-# DeepStream Detection Deploy
-
-See more in [`README.md`](csrc/deepstream/README.md)
-
-# Jetson Deploy
-
-Only test on `Jetson-NX 4GB`.
-See more in [`Jetson.md`](docs/Jetson.md)
-
-# Profile you engine
-
-If you want to profile the TensorRT engine:
-
-Usage:
-
-``` shell
-python3 trt-profile.py --engine yolov8s.engine --device cuda:0
+```
+csrc/detect/end2end/
+├── CMakeLists.txt
+├── main.cpp              # End2End 推理（baseline，含 NMS engine）
+├── main_normal.cpp       # 完整优化版本（自实现 decode + NMS + CUDA Graph）
+├── preprocess.cu         # CUDA letterbox 前处理 kernel
+├── postprocess.cu        # CUDA decode + NMS kernel
+├── cmake/
+│   └── FindTensorRT.cmake
+│   └── Function.cmake
+└── include/
+    ├── yolov8.hpp        # End2End 推理类
+    ├── preprocess.h
+    ├── postprocess.h
+    └── common.hpp
 ```
 
-# Refuse To Use PyTorch for Model Inference !!!
+---
 
-If you need to break away from pytorch and use tensorrt inference,
-you can get more information in [`infer-det-without-torch.py`](infer-det-without-torch.py),
-the usage is the same as the pytorch version, but its performance is much worse.
+## 主要优化说明
 
-You can use `cuda-python` or `pycuda` for inference.
-Please install by such command:
+### CUDA Letterbox 前处理
 
-```shell
-pip install cuda-python
-# or
-pip install pycuda
+将以下五步合并为单一 CUDA kernel，避免多次全局内存访问：
+
+1. 等比例缩放（双线性插值）
+2. 灰边填充（值 114/255）
+3. BGR → RGB
+4. uint8 → float32 归一化
+5. HWC → CHW 格式转换
+
+通过预分配显存（最大支持 4K 输入），消除每帧 `cudaMalloc/cudaFree` 开销，前处理耗时从 1.6ms 降至 0.5ms。
+
+### 双缓冲流水线
+
+使用两个独立的推理上下文，使 GPU 推理与下一帧的 CPU imread 并行执行：
+
+```
+帧i：  [imread] → [前处理] → [推理] → [后处理]
+帧i+1：          [imread] → [前处理] → [推理] → [后处理]
 ```
 
-Usage:
+### CUDA Graph
 
-``` shell
-python3 infer-det-without-torch.py \
---engine yolov8s.engine \
---imgs data \
---show \
---out-dir outputs \
---method cudart
-```
+将单帧完整推理流程（前处理→推理→解码→NMS→D2H）录制为 CUDA Graph，每帧只需一次 `cudaGraphLaunch`，降低 CPU kernel launch overhead，帧间延迟更稳定。
 
-#### Description of all arguments
+动态参数（图像尺寸、缩放比例等）通过 GPU 上的参数结构体传递，无需重新录制 Graph。
 
-- `--engine` : The Engine you export.
-- `--imgs` : The images path you want to detect.
-- `--show` : Whether to show detection results.
-- `--out-dir` : Where to save detection results images. It will not work when use `--show` flag.
-- `--method` : Choose `cudart` or `pycuda`, default is `cudart`.
+---
+
+## 参考
+
+- [triple-Mu/YOLOv8-TensorRT](https://github.com/triple-Mu/YOLOv8-TensorRT)
+- [ultralytics/ultralytics](https://github.com/ultralytics/ultralytics)
+- [NVIDIA TensorRT 文档](https://docs.nvidia.com/deeplearning/tensorrt/)
