@@ -90,3 +90,14 @@ target_link_libraries(
         PRIVATE
         ${ALL_LIBS}
 )
+
+add_executable(
+        yolov8_normal
+        ${CMAKE_CURRENT_SOURCE_DIR}/main_normal.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/preprocess.cu
+        ${CMAKE_CURRENT_SOURCE_DIR}/postprocess.cu
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/common.hpp
+)
+target_include_directories(yolov8_normal PUBLIC ${ALL_INCLUDE_DIRS})
+target_link_directories(yolov8_normal PUBLIC ${ALL_LIB_DIRS})
+target_link_libraries(yolov8_normal PRIVATE ${ALL_LIBS})
