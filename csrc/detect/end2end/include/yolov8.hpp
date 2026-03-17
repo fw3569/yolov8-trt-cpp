@@ -5,7 +5,6 @@
 #define DETECT_END2END_YOLOV8_HPP
 #include "NvInferPlugin.h"
 #include "common.hpp"
-#include "preprocess.h"
 #include <fstream>
 using namespace det;
 
@@ -19,7 +18,6 @@ public:
     void                 copy_from_Mat(const cv::Mat& image, cv::Size& size);
     void                 letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size);
     void                 infer();
-    void                 infer_async();
     void                 postprocess(std::vector<Object>& objs);
     static void          draw_objects(const cv::Mat&                                image,
                                       cv::Mat&                                      res,
@@ -33,7 +31,6 @@ public:
     std::vector<Binding> output_bindings;
     std::vector<void*>   host_ptrs;
     std::vector<void*>   device_ptrs;
-    cudaStream_t         stream  = nullptr;
 
     PreParam pparam;
 
@@ -41,9 +38,8 @@ private:
     nvinfer1::ICudaEngine*       engine  = nullptr;
     nvinfer1::IRuntime*          runtime = nullptr;
     nvinfer1::IExecutionContext* context = nullptr;
+    cudaStream_t                 stream  = nullptr;
     Logger                       gLogger{nvinfer1::ILogger::Severity::kERROR};
-    int                          src_device_size = 3840 * 2160 * 3;
-    uint8_t*                     src_device;
 };
 
 YOLOv8::YOLOv8(const std::string& engine_file_path)
@@ -119,12 +115,10 @@ YOLOv8::YOLOv8(const std::string& engine_file_path)
             this->num_outputs += 1;
         }
     }
-    cudaMalloc(&src_device, src_device_size);
 }
 
 YOLOv8::~YOLOv8()
 {
-    cudaFree(src_device);
 #ifdef TRT_10
     delete this->context;
     delete this->engine;
@@ -239,39 +233,22 @@ void YOLOv8::letterbox(const cv::Mat& image, cv::Mat& out, cv::Size& size)
     this->pparam.width  = width;
     ;
 }
+
 void YOLOv8::copy_from_Mat(const cv::Mat& image)
 {
+    cv::Mat  nchw;
     auto&    in_binding = this->input_bindings[0];
     int      width      = in_binding.dims.d[3];
     int      height     = in_binding.dims.d[2];
     cv::Size size{width, height};
+    this->letterbox(image, nchw, size);
 
-    auto t0 = std::chrono::high_resolution_clock::now();
-    int src_size = image.rows * image.cols * 3;
-    if (src_size > this->src_device_size) {
-        if (this->src_device) cudaFree(this->src_device);
-        cudaMalloc(&this->src_device, src_size);
-        this->src_device_size = src_size;
-    }
-    preprocess(const_cast<cv::Mat&>(image),
-               src_device,
-               (float*)this->device_ptrs[0],
-               width, height, this->stream);
-
-    float scale = std::min((float)width / image.cols, (float)height / image.rows);
-    this->pparam.ratio  = 1.f / scale;
-    this->pparam.dw     = (width  - image.cols * scale) / 2.f;
-    this->pparam.dh     = (height - image.rows * scale) / 2.f;
-    this->pparam.height = image.rows;
-    this->pparam.width  = image.cols;
-               
-    auto t1 = std::chrono::high_resolution_clock::now();
-    float ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-    printf("preprocess time: %.3f ms\n", ms);
+    CHECK(cudaMemcpyAsync(
+        this->device_ptrs[0], nchw.ptr<float>(), nchw.total() * nchw.elemSize(), cudaMemcpyHostToDevice, this->stream));
 
 #ifdef TRT_10
     auto name = this->input_bindings[0].name.c_str();
-    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, height, width}});
+    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, size.height, size.width}});
     this->context->setTensorAddress(name, this->device_ptrs[0]);
 #else
     this->context->setBindingDimensions(0, nvinfer1::Dims{4, {1, 3, height, width}});
@@ -280,40 +257,18 @@ void YOLOv8::copy_from_Mat(const cv::Mat& image)
 
 void YOLOv8::copy_from_Mat(const cv::Mat& image, cv::Size& size)
 {
-    int width  = size.width;
-    int height = size.height;
+    cv::Mat nchw;
+    this->letterbox(image, nchw, size);
 
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    int src_size = image.rows * image.cols * 3;
-    if (src_size > this->src_device_size) {
-        if (this->src_device) cudaFree(this->src_device);
-        cudaMalloc(&this->src_device, src_size);
-        this->src_device_size = src_size;
-    }
-    preprocess(const_cast<cv::Mat&>(image),
-               src_device,
-               (float*)this->device_ptrs[0],
-               width, height, this->stream);
-
-    float scale = std::min((float)width / image.cols, (float)height / image.rows);
-    this->pparam.ratio  = 1.f / scale;
-    this->pparam.dw     = (width  - image.cols * scale) / 2.f;
-    this->pparam.dh     = (height - image.rows * scale) / 2.f;
-    this->pparam.height = image.rows;
-    this->pparam.width  = image.cols;
-
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    float ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-    printf("preprocess time: %.3f ms\n", ms);
+    CHECK(cudaMemcpyAsync(
+        this->device_ptrs[0], nchw.ptr<float>(), nchw.total() * nchw.elemSize(), cudaMemcpyHostToDevice, this->stream));
 
 #ifdef TRT_10
     auto name = this->input_bindings[0].name.c_str();
-    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, height, width}});
+    this->context->setInputShape(name, nvinfer1::Dims{4, {1, 3, size.height, size.width}});
     this->context->setTensorAddress(name, this->device_ptrs[0]);
 #else
-    this->context->setBindingDimensions(0, nvinfer1::Dims{4, {1, 3, height, width}});
+    this->context->setBindingDimensions(0, nvinfer1::Dims{4, {1, 3, size.height, size.width}});
 #endif
 }
 
@@ -330,22 +285,6 @@ void YOLOv8::infer()
             this->host_ptrs[i], this->device_ptrs[i + this->num_inputs], osize, cudaMemcpyDeviceToHost, this->stream));
     }
     cudaStreamSynchronize(this->stream);
-}
-
-void YOLOv8::infer_async()
-{
-#ifdef TRT_10
-    this->context->enqueueV3(this->stream);
-#else
-    this->context->enqueueV2(this->device_ptrs.data(), this->stream, nullptr);
-#endif
-    for (int i = 0; i < this->num_outputs; i++) {
-        size_t osize = this->output_bindings[i].size * this->output_bindings[i].dsize;
-        CHECK(cudaMemcpyAsync(
-            this->host_ptrs[i], this->device_ptrs[i + this->num_inputs],
-            osize, cudaMemcpyDeviceToHost, this->stream));
-    }
-    // 不加 cudaStreamSynchronize
 }
 
 void YOLOv8::postprocess(std::vector<Object>& objs)

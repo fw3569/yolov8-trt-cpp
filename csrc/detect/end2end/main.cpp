@@ -4,7 +4,6 @@
 #include "opencv2/opencv.hpp"
 #include "yolov8.hpp"
 #include <chrono>
-#include <future>
 
 namespace fs = ghc::filesystem;
 
@@ -103,62 +102,27 @@ int main(int argc, char** argv)
                 break;
             }
         }
-    } else {
-        const int N = imagePathList.size();
-        if(N > 0) {
-            auto yolov8_1 = new YOLOv8(engine_file_path);
-            yolov8_1->make_pipe(false);
-    
-            YOLOv8* inst[2] = {yolov8, yolov8_1};
-            cv::Mat image_buf[2];
-            cv::Mat res_buf[2];
-            std::vector<Object> objs_buf[2];
-            
-            // statistics processing time
-            auto t0 = std::chrono::high_resolution_clock::now();
-            std::future<cv::Mat> next_image_future;
-            if (N > 1) {
-                next_image_future = std::async(std::launch::async, [&]() {
-                    return cv::imread(imagePathList[1]);
-                });
-            }
-    
-            image_buf[0] = cv::imread(imagePathList[0]);
-            inst[0]->copy_from_Mat(image_buf[0], size);
-            inst[0]->infer_async();
-    
-            for (int i = 1; i <= N; i++) {
-                int cur  = i % 2;
-                int prev = (i - 1) % 2;
-    
-                if (i < N) {
-                    image_buf[cur] = next_image_future.get();
-    
-                    if (i + 1 < N) {
-                        next_image_future = std::async(std::launch::async, [&, i]() {
-                            return cv::imread(imagePathList[i + 1]);
-                        });
-                    }
-    
-                    inst[cur]->copy_from_Mat(image_buf[cur], size);
-                    inst[cur]->infer_async();
-                }
-    
-                cudaStreamSynchronize(inst[prev]->stream);
-    
-                objs_buf[prev].clear();
-                inst[prev]->postprocess(objs_buf[prev]);
-                inst[prev]->draw_objects(image_buf[prev], res_buf[prev],
-                                        objs_buf[prev], CLASS_NAMES, COLORS);
-                // cv::imshow("result", res_buf[prev]);
-                // cv::waitKey(0);
-            }
-            auto t1 = std::chrono::high_resolution_clock::now();
-            float ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-            printf("process time: %.3f ms\n", ms);
-    
-            delete yolov8_1;
+    }
+    else {
+        // statistics processing time, please delete imshow and waitKey for test
+        // auto t0 = std::chrono::high_resolution_clock::now();
+        for (auto& p : imagePathList) {
+            objs.clear();
+            image = cv::imread(p);
+            yolov8->copy_from_Mat(image, size);
+            auto start = std::chrono::system_clock::now();
+            yolov8->infer();
+            auto end = std::chrono::system_clock::now();
+            yolov8->postprocess(objs);
+            yolov8->draw_objects(image, res, objs, CLASS_NAMES, COLORS);
+            auto tc = (double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() / 1000.;
+            printf("cost %2.4lf ms\n", tc);
+            cv::imshow("result", res);
+            cv::waitKey(0);
         }
+        // auto t1 = std::chrono::high_resolution_clock::now();
+        // float ms = std::chrono::duration<float, std::milli>(t1-t0).count();
+        // printf("cost %.2f ms\n", ms);
     }
     cv::destroyAllWindows();
     delete yolov8;
