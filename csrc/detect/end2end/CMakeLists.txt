@@ -65,31 +65,31 @@ print_var(ALL_LIBS)
 print_var(ALL_LIB_DIRS)
 
 
-add_executable(
-        ${PROJECT_NAME}
-        ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/preprocess.cu
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/yolov8.hpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/common.hpp
-)
+# add_executable(
+#         ${PROJECT_NAME}
+#         ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+#         ${CMAKE_CURRENT_SOURCE_DIR}/preprocess.cu
+#         ${CMAKE_CURRENT_SOURCE_DIR}/include/yolov8.hpp
+#         ${CMAKE_CURRENT_SOURCE_DIR}/include/common.hpp
+# )
 
-target_include_directories(
-        ${PROJECT_NAME}
-        PUBLIC
-        ${ALL_INCLUDE_DIRS}
-)
+# target_include_directories(
+#         ${PROJECT_NAME}
+#         PUBLIC
+#         ${ALL_INCLUDE_DIRS}
+# )
 
-target_link_directories(
-        ${PROJECT_NAME}
-        PUBLIC
-        ${ALL_LIB_DIRS}
-)
+# target_link_directories(
+#         ${PROJECT_NAME}
+#         PUBLIC
+#         ${ALL_LIB_DIRS}
+# )
 
-target_link_libraries(
-        ${PROJECT_NAME}
-        PRIVATE
-        ${ALL_LIBS}
-)
+# target_link_libraries(
+#         ${PROJECT_NAME}
+#         PRIVATE
+#         ${ALL_LIBS}
+# )
 
 add_executable(
         yolov8_normal

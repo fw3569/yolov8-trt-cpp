@@ -52,6 +52,12 @@ struct InferContext {
     int*   h_keep    = nullptr;
 
     float ratio, dw, dh, width, height;
+
+    cudaGraph_t     graph      = nullptr;
+    cudaGraphExec_t graph_exec = nullptr;
+    bool            graph_ready = false;
+    PreprocessParams* d_params = nullptr;
+    PreprocessParams  h_params;
 };
 
 InferContext* create_context(const std::string& engine_path) {
@@ -80,6 +86,7 @@ InferContext* create_context(const std::string& engine_path) {
     cudaMalloc(&ctx->d_labels,    8400*sizeof(int));
     cudaMalloc(&ctx->d_num_valid, sizeof(int));
     cudaMalloc(&ctx->d_keep,      8400*sizeof(int));
+    cudaMalloc(&ctx->d_params, sizeof(PreprocessParams));
 
     cudaMallocHost(&ctx->h_boxes,     8400*4*sizeof(float));
     cudaMallocHost(&ctx->h_scores,    8400*sizeof(float));
@@ -96,6 +103,7 @@ InferContext* create_context(const std::string& engine_path) {
 }
 
 void destroy_context(InferContext* ctx) {
+    if (ctx->graph_exec) cudaGraphExecDestroy(ctx->graph_exec);
     cudaStreamSynchronize(ctx->stream);
     cudaFree(ctx->d_input);
     cudaFree(ctx->d_output);
@@ -105,6 +113,7 @@ void destroy_context(InferContext* ctx) {
     cudaFree(ctx->d_labels);
     cudaFree(ctx->d_num_valid);
     cudaFree(ctx->d_keep);
+    cudaFree(ctx->d_params);
     cudaFreeHost(ctx->h_boxes);
     cudaFreeHost(ctx->h_scores);
     cudaFreeHost(ctx->h_labels);
@@ -120,10 +129,10 @@ void destroy_context(InferContext* ctx) {
     delete ctx;
 }
 
-void infer(InferContext* cur_ctx, InferContext* prev_ctx, const cv::Mat& image,
-           std::vector<Detection>& results)
+void infer(InferContext* cur_ctx, InferContext* prev_ctx,
+           const cv::Mat& image, std::vector<Detection>& results)
 {
-    if(cur_ctx != nullptr) {
+    if (cur_ctx != nullptr) {
         InferContext* ctx = cur_ctx;
         int W = 640, H = 640;
 
@@ -132,42 +141,72 @@ void infer(InferContext* cur_ctx, InferContext* prev_ctx, const cv::Mat& image,
             cudaFree(ctx->d_src);
             cudaMalloc(&ctx->d_src, src_size);
             ctx->src_size = src_size;
+            ctx->graph_ready = false;
         }
         cudaMemcpyAsync(ctx->d_src, image.data, src_size,
                         cudaMemcpyHostToDevice, ctx->stream);
 
-        float scale = std::min((float)W/image.cols, (float)H/image.rows);
-        ctx->dw     = (W - image.cols * scale) / 2.f;
-        ctx->dh     = (H - image.rows * scale) / 2.f;
-        ctx->ratio  = 1.f / scale;
+        ctx->h_params = compute_params(image.cols, image.rows, W, H);
+        cudaMemcpyAsync(ctx->d_params, &ctx->h_params,
+                        sizeof(PreprocessParams),
+                        cudaMemcpyHostToDevice, ctx->stream);
+
+        ctx->dw    = ctx->h_params.pad_w;
+        ctx->dh    = ctx->h_params.pad_h;
+        ctx->ratio = 1.f / ctx->h_params.scale;
         ctx->width  = image.cols;
         ctx->height = image.rows;
 
-        preprocess_kernel_invoker(ctx->d_src, image.cols, image.rows,
-                                  (float*)ctx->d_input, W, H,
-                                  114.f/255.f, ctx->stream);
+        cudaStreamSynchronize(ctx->stream);
 
-        ctx->context->enqueueV3(ctx->stream);
+        if (!ctx->graph_ready) {
+            cudaStreamBeginCapture(ctx->stream,
+                                   cudaStreamCaptureModeGlobal);
 
-        decode_kernel_invoker((float*)ctx->d_output, 8400, 80, 0.25f,
-                              ctx->d_boxes, ctx->d_scores, ctx->d_labels,
-                              ctx->d_num_valid, ctx->stream);
-        
-        nms_kernel_invoker(ctx->d_boxes, ctx->d_scores, ctx->d_labels, 8400,
-                          ctx->d_num_valid, 0.65f, ctx->d_keep, ctx->stream);
-        cudaMemcpyAsync(ctx->h_num_valid, ctx->d_num_valid, sizeof(int),
-                        cudaMemcpyDeviceToHost, ctx->stream);
-    
-        cudaMemcpyAsync(ctx->h_boxes,  ctx->d_boxes,  8400*4*sizeof(float), cudaMemcpyDeviceToHost, ctx->stream);
-        cudaMemcpyAsync(ctx->h_scores, ctx->d_scores, 8400*sizeof(float),   cudaMemcpyDeviceToHost, ctx->stream);
-        cudaMemcpyAsync(ctx->h_labels, ctx->d_labels, 8400*sizeof(int),     cudaMemcpyDeviceToHost, ctx->stream);
-        cudaMemcpyAsync(ctx->h_keep,   ctx->d_keep,   8400*sizeof(int),     cudaMemcpyDeviceToHost, ctx->stream);
+            preprocess_kernel_invoker(
+                ctx->d_src,
+                (float*)ctx->d_input,
+                ctx->d_params,
+                ctx->stream);
+
+            ctx->context->enqueueV3(ctx->stream);
+
+            decode_kernel_invoker((float*)ctx->d_output, 8400, 80, 0.25f,
+                                  ctx->d_boxes, ctx->d_scores, ctx->d_labels,
+                                  ctx->d_num_valid, ctx->stream);
+
+            nms_kernel_invoker(ctx->d_boxes, ctx->d_scores, ctx->d_labels, 8400,
+                               ctx->d_num_valid, 0.65f,
+                               ctx->d_keep, ctx->stream);
+
+            cudaMemcpyAsync(ctx->h_num_valid, ctx->d_num_valid,
+                            sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
+            cudaMemcpyAsync(ctx->h_boxes,  ctx->d_boxes,
+                            8400*4*sizeof(float), cudaMemcpyDeviceToHost, ctx->stream);
+            cudaMemcpyAsync(ctx->h_scores, ctx->d_scores,
+                            8400*sizeof(float), cudaMemcpyDeviceToHost, ctx->stream);
+            cudaMemcpyAsync(ctx->h_labels, ctx->d_labels,
+                            8400*sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
+            cudaMemcpyAsync(ctx->h_keep,   ctx->d_keep,
+                            8400*sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
+
+            cudaGraph_t graph;
+            cudaStreamEndCapture(ctx->stream, &graph);
+
+            if (ctx->graph_exec) cudaGraphExecDestroy(ctx->graph_exec);
+            cudaGraphInstantiate(&ctx->graph_exec, graph, nullptr, nullptr, 0);
+            cudaGraphDestroy(graph);
+            ctx->graph_ready = true;
+        }
+
+        cudaGraphLaunch(ctx->graph_exec, ctx->stream);
     }
-    if(prev_ctx != nullptr) {
-      InferContext* ctx = prev_ctx;
-      cudaStreamSynchronize(ctx->stream);
-      
-      results.clear();
+
+    if (prev_ctx != nullptr) {
+        InferContext* ctx = prev_ctx;
+        cudaStreamSynchronize(ctx->stream);
+
+        results.clear();
         for (int i = 0; i < *ctx->h_num_valid; i++) {
             if (!ctx->h_keep[i]) continue;
             Detection det;
@@ -252,8 +291,8 @@ int main(int argc, char** argv)
         infer(i < n ? ctx[i % 2] : nullptr, i > 0 ? ctx[(i + 1) % 2] : nullptr, image[i % 2], dets[i % 2]);
         if(i > 0){
           draw(image[(i + 1) % 2], dets[i % 2]);
-          cv::imshow("result", image[(i + 1) % 2]);
-          cv::waitKey(0);
+          // cv::imshow("result", image[(i + 1) % 2]);
+          // cv::waitKey(0);
         }
     }
     auto t1 = std::chrono::high_resolution_clock::now();
