@@ -16,32 +16,72 @@ __device__ float iou(float* a, float* b)
     return inter / (area_a + area_b - inter);
 }
 
-__global__ void init_keep(int* keep, int n) {
+__global__ void bitonic_sort_step(
+    float* scores,
+    int*   indices,
+    int*   num_valid,
+    int    stage,
+    int    step)
+{
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) keep[i] = 1;
+
+    int j = i ^ step;
+    if (j > i) {
+        bool ascending = (i & stage) == 0;
+        if ((scores[i] < scores[j]) == ascending) {
+            float tmp_s  = scores[i];
+            scores[i]    = scores[j];
+            scores[j]    = tmp_s;
+            int tmp_idx = indices[i];
+            indices[i]  = indices[j];
+            indices[j]  = tmp_idx;
+        }
+    }
+}
+
+void bitonic_sort_invoker(
+    float* scores,
+    int* indices,
+    int* num_valid,
+    int n,
+    cudaStream_t stream)
+{
+    int block = 256;
+    int grid  = (n + block - 1) / block;
+
+    for (int stage = 2; stage <= n; stage <<= 1) {
+        for (int step = stage >> 1; step > 0; step >>= 1) {
+            bitonic_sort_step<<<grid, block, 0, stream>>>(
+                scores, indices, num_valid, stage, step);
+        }
+    }
+}
+
+__global__ void init_keep(int* keep, int* num_valid) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < *num_valid) keep[i] = 1;
 }
 
 __global__ void nms_kernel(
     float* boxes,
-    float* scores,
+    int*   indices,
     int*   labels,
-    int*   num_boxes,
+    int*   num_valid,
     float  iou_thres,
     int*   keep)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= *num_boxes) return;
+    if (i >= *num_valid) return;
 
-    keep[i] = 1;
-    __syncthreads();
+    int id_i = indices[i];
 
-    for (int j = 0; j < *num_boxes; j++) {
-        if (j == i) continue;
-        if (labels[j] != labels[i]) continue;
-        if (scores[j] <= scores[i]) continue;
+    for (int j = 0; j < i; j++) {
+        int id_j = indices[j];
+        if (!keep[id_j]) continue;
+        if (labels[id_j] != labels[id_i]) continue;
 
-        if (iou(boxes + i * 4, boxes + j * 4) > iou_thres) {
-            keep[i] = 0;
+        if (iou(boxes + id_i * 4, boxes + id_j * 4) > iou_thres) {
+            keep[id_i] = 0;
             return;
         }
     }
@@ -49,21 +89,20 @@ __global__ void nms_kernel(
 
 void nms_kernel_invoker(
     float* boxes_device,
-    float* scores_device,
+    int*   indices_device,
     int*   labels_device,
     int    num_anchors,
-    int*   num_boxes,
+    int*   num_valid,
     float  iou_thres,
     int*   keep_device,
     cudaStream_t stream)
 {
     int block = 256;
     int grid  = (num_anchors + block - 1) / block;
-    init_keep<<<grid, block, 0, stream>>>(
-        keep_device, num_anchors);
+    init_keep<<<grid, block, 0, stream>>>(keep_device, num_valid);
     nms_kernel<<<grid, block, 0, stream>>>(
-        boxes_device, scores_device, labels_device,
-        num_boxes, iou_thres, keep_device);
+        boxes_device, indices_device,
+        labels_device, num_valid, iou_thres, keep_device);
 }
 
 __global__ void decode_kernel(
@@ -73,6 +112,8 @@ __global__ void decode_kernel(
     float  conf_thres,
     float* boxes_device,
     float* scores_device,
+    float* scores_sort_device,
+    int*   indices_device,
     int*   labels_device,
     int*   num_valid)
 {
@@ -107,6 +148,8 @@ __global__ void decode_kernel(
     boxes_device[pos * 4 + 2] = x2;
     boxes_device[pos * 4 + 3] = y2;
     scores_device[pos]         = max_score;
+    scores_sort_device[pos]    = max_score;
+    indices_device[pos]        = pos;
     labels_device[pos]         = max_label;
 }
 
@@ -117,6 +160,8 @@ void decode_kernel_invoker(
     float  conf_thres,
     float* boxes_device,
     float* scores_device,
+    float* scores_sort_device,
+    int*   indices_device,
     int*   labels_device,
     int*   num_valid,
     cudaStream_t stream)
@@ -126,6 +171,7 @@ void decode_kernel_invoker(
     int block = 256;
     int grid  = (num_anchors + block - 1) / block;
     decode_kernel<<<grid, block, 0, stream>>>(
-        output, num_anchors, num_classes, conf_thres,
-        boxes_device, scores_device, labels_device, num_valid);
+        output, num_anchors, num_classes, conf_thres, boxes_device,
+        scores_device, scores_sort_device, indices_device,
+        labels_device, num_valid);
 }

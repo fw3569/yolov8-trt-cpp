@@ -15,6 +15,8 @@ void decode_kernel_invoker(
     float       conf_thres,
     float*      boxes_device,
     float*      scores_device,
+    float*      scores_sort_device,
+    int*        indices_device,
     int*        labels_device,
     int*        num_valid,
     cudaStream_t stream
@@ -22,11 +24,18 @@ void decode_kernel_invoker(
 
 void nms_kernel_invoker(
     float*      boxes_device,
-    float*      scores_device,
+    int*        indices_device,
     int*        labels_device,
     int         num_anchors,
-    int*        num_boxes,
+    int*        num_valid,
     float       iou_thres,
     int*        keep_device,
     cudaStream_t stream
 );
+
+void bitonic_sort_invoker(
+    float*       scores,
+    int*         indices,
+    int*         num_valid,
+    int          n,
+    cudaStream_t tream);

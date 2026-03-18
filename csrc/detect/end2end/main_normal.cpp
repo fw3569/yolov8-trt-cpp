@@ -39,17 +39,19 @@ struct InferContext {
     uint8_t* d_src  = nullptr;
     int src_size    = 0;
 
-    float* d_boxes   = nullptr;
-    float* d_scores  = nullptr;
-    int*   d_labels  = nullptr;
-    int*   d_num_valid = nullptr;
-    int*   d_keep    = nullptr;
+    float* d_boxes       = nullptr;
+    float* d_scores      = nullptr;
+    float* d_scores_sort = nullptr;
+    int*   d_indices     = nullptr;
+    int*   d_labels      = nullptr;
+    int*   d_num_valid   = nullptr;
+    int*   d_keep        = nullptr;
     
-    float* h_boxes   = nullptr;
-    float* h_scores  = nullptr;
-    int*   h_labels  = nullptr;
+    float* h_boxes     = nullptr;
+    float* h_scores    = nullptr;
+    int*   h_labels    = nullptr;
     int*   h_num_valid = nullptr;
-    int*   h_keep    = nullptr;
+    int*   h_keep      = nullptr;
 
     float ratio, dw, dh, width, height;
 
@@ -81,12 +83,14 @@ InferContext* create_context(const std::string& engine_path) {
     cudaMalloc(&ctx->d_src,    3840*2160*3);
     ctx->src_size = 3840*2160*3;
 
-    cudaMalloc(&ctx->d_boxes,     8400*4*sizeof(float));
-    cudaMalloc(&ctx->d_scores,    8400*sizeof(float));
-    cudaMalloc(&ctx->d_labels,    8400*sizeof(int));
-    cudaMalloc(&ctx->d_num_valid, sizeof(int));
-    cudaMalloc(&ctx->d_keep,      8400*sizeof(int));
-    cudaMalloc(&ctx->d_params, sizeof(PreprocessParams));
+    cudaMalloc(&ctx->d_boxes,       8400*4*sizeof(float));
+    cudaMalloc(&ctx->d_scores,      8400*sizeof(float));
+    cudaMalloc(&ctx->d_scores_sort, 16384*sizeof(float)); // pad to 2^14
+    cudaMalloc(&ctx->d_indices,     16384*sizeof(int));   // pad to 2^14
+    cudaMalloc(&ctx->d_labels,      8400*sizeof(int));
+    cudaMalloc(&ctx->d_num_valid,   sizeof(int));
+    cudaMalloc(&ctx->d_keep,        8400*sizeof(int));
+    cudaMalloc(&ctx->d_params,      sizeof(PreprocessParams));
 
     cudaMallocHost(&ctx->h_boxes,     8400*4*sizeof(float));
     cudaMallocHost(&ctx->h_scores,    8400*sizeof(float));
@@ -110,6 +114,8 @@ void destroy_context(InferContext* ctx) {
     cudaFree(ctx->d_src);
     cudaFree(ctx->d_boxes);
     cudaFree(ctx->d_scores);
+    cudaFree(ctx->d_scores_sort);
+    cudaFree(ctx->d_indices);
     cudaFree(ctx->d_labels);
     cudaFree(ctx->d_num_valid);
     cudaFree(ctx->d_keep);
@@ -171,13 +177,12 @@ void infer(InferContext* cur_ctx, InferContext* prev_ctx,
 
             ctx->context->enqueueV3(ctx->stream);
 
+            cudaMemsetAsync(ctx->d_scores_sort, 0, 16384 * sizeof(float),
+                            ctx->stream);
             decode_kernel_invoker((float*)ctx->d_output, 8400, 80, 0.25f,
-                                  ctx->d_boxes, ctx->d_scores, ctx->d_labels,
-                                  ctx->d_num_valid, ctx->stream);
-
-            nms_kernel_invoker(ctx->d_boxes, ctx->d_scores, ctx->d_labels, 8400,
-                               ctx->d_num_valid, 0.65f,
-                               ctx->d_keep, ctx->stream);
+                                  ctx->d_boxes, ctx->d_scores,
+                                  ctx->d_scores_sort, ctx->d_indices,
+                                  ctx->d_labels, ctx->d_num_valid, ctx->stream);
 
             cudaMemcpyAsync(ctx->h_num_valid, ctx->d_num_valid,
                             sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
@@ -187,6 +192,13 @@ void infer(InferContext* cur_ctx, InferContext* prev_ctx,
                             8400*sizeof(float), cudaMemcpyDeviceToHost, ctx->stream);
             cudaMemcpyAsync(ctx->h_labels, ctx->d_labels,
                             8400*sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
+
+            bitonic_sort_invoker(ctx->d_scores_sort, ctx->d_indices,
+                                 ctx->d_num_valid, 16384, ctx->stream);
+            nms_kernel_invoker(ctx->d_boxes, ctx->d_indices,
+                               ctx->d_labels, 8400, ctx->d_num_valid, 0.65f,
+                               ctx->d_keep, ctx->stream);
+
             cudaMemcpyAsync(ctx->h_keep,   ctx->d_keep,
                             8400*sizeof(int), cudaMemcpyDeviceToHost, ctx->stream);
 
@@ -291,8 +303,9 @@ int main(int argc, char** argv)
         infer(i < n ? ctx[i % 2] : nullptr, i > 0 ? ctx[(i + 1) % 2] : nullptr, image[i % 2], dets[i % 2]);
         if(i > 0){
           draw(image[(i + 1) % 2], dets[i % 2]);
-          // cv::imshow("result", image[(i + 1) % 2]);
-          // cv::waitKey(0);
+          // please delete these two lines when test time cost
+          cv::imshow("result", image[(i + 1) % 2]);
+          cv::waitKey(0);
         }
     }
     auto t1 = std::chrono::high_resolution_clock::now();
