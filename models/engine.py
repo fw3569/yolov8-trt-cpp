@@ -37,7 +37,10 @@ class EngineBuilder:
         self.device = device
 
     def __build_engine(self,
-                       fp16: bool = True,
+                       fp16=True,
+                       int8=False,
+                       calib_dir='',
+                       calib_cache='calibration.cache',
                        input_shape: Union[List, Tuple] = (1, 3, 640, 640),
                        iou_thres: float = 0.65,
                        conf_thres: float = 0.25,
@@ -71,6 +74,12 @@ class EngineBuilder:
             self.build_from_onnx(iou_thres, conf_thres, topk)
         if fp16 and self.builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
+
+        if int8:
+            assert calib_dir, 'INT8 requires --calib-dir'
+            from .calibrator import Int8Calibrator
+            config.set_flag(trt.BuilderFlag.INT8)
+            config.int8_calibrator = Int8Calibrator(calib_dir, input_shape, calib_cache)
         self.weight = self.checkpoint.with_suffix('.engine')
 
         if with_profiling:
@@ -100,14 +109,17 @@ class EngineBuilder:
             raise RuntimeError('Engine creation failed')
 
     def build(self,
-              fp16: bool = True,
+              fp16=True,
+              int8=False,
+              calib_dir='',
+              calib_cache='calibration.cache',
               input_shape: Union[List, Tuple] = (1, 3, 640, 640),
               iou_thres: float = 0.65,
               conf_thres: float = 0.25,
               topk: int = 100,
               with_profiling=True) -> None:
-        self.__build_engine(fp16, input_shape, iou_thres, conf_thres, topk,
-                            with_profiling)
+        self.__build_engine(fp16, int8, calib_dir, calib_cache, input_shape,
+                            iou_thres, conf_thres, topk, with_profiling)
 
     def build_from_onnx(self,
                         iou_thres: float = 0.65,

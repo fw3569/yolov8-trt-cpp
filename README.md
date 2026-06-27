@@ -14,6 +14,7 @@
 - **双缓冲流水线**：GPU 推理与下一帧 CPU imread 并行执行
 - **CUDA Graph**：将整帧推理流程录制为 Graph 一次提交，降低帧间延迟抖动
 - **Pinned Memory**：使用页锁定内存加速 D2H 数据传输
+- **int8**：加上了对int8量化的支持，可以使模型体积减小30%
 
 ---
 
@@ -38,7 +39,7 @@
 | 双缓冲 + 异步 imread | ~65ms | ~10.8ms | 提升 38% |
 | + CUDA Graph | ~65ms | ~10.8ms | 延迟抖动明显降低 |
 
-> 注：MX450 上瓶颈为 cv::imread（~10ms），GPU 推理（~5ms）已被完全掩盖。CUDA Graph 主要收益为降低帧间抖动而非平均耗时。
+> 注：测试环境上瓶颈为 cv::imread（~10ms），GPU 推理（~5ms）已被完全掩盖。CUDA Graph 主要收益为降低帧间抖动而非平均耗时。
 
 ### Nsight Systems Profiling
 
@@ -78,6 +79,7 @@
 # nvidia-cudnn-cu12  
 # nvidia-cublas-cu12  
 # 等其他常见库不一一列出如报缺少自行安装
+# 请自行准备测试图片
 
 # End2End 模式（含 NMS，对应 main.cpp）
 python export-det.py \
@@ -90,7 +92,8 @@ python export-det.py \
     --input-shape 1 3 640 640 \
     --device cuda:0
 
-# 转换 TensorRT Engine
+# 转换 TensorRT Engine 下面三个选一个
+# FP16
 python build.py \
     --weights yolov8n.onnx \
     --iou-thres 0.65 \
@@ -99,11 +102,39 @@ python build.py \
     --fp16 \
     --device cuda:0
 
+# INT8
+python build.py \
+    --weights yolov8n.onnx \
+    --iou-thres 0.65 \
+    --conf-thres 0.25 \
+    --topk 100 \
+    --int8 \
+    --calib-dir /path/to/calib_images \
+    --calib-cache /path/to/calibration.cache \
+    --device cuda:0
+
+# INT8 + FP16 混合
+python build.py \
+    --weights yolov8n.onnx \
+    --iou-thres 0.65 \
+    --conf-thres 0.25 \
+    --topk 100 \
+    --fp16 \
+    --int8 \
+    --calib-dir /path/to/calib_images \
+    --calib-cache /path/to/calibration.cache \
+    --device cuda:0
+
 # Normal 模式（不含 NMS，对应 main_normal.cpp）
 python -c "from ultralytics import YOLO; YOLO('yolov8n.pt').export(format='onnx', opset=11, simplify=False)"
 
-# 用 trtexec 转换
+# 用 trtexec 转换 下面两个选一个
 trtexec --onnx=yolov8n.onnx --saveEngine=yolov8n_normal.engine --fp16
+trtexec --onnx=yolov8n.onnx \
+    --saveEngine=yolov8n_normal.engine \
+    --fp16 \
+    --int8 \
+    --calib=/path/to/calib_images
 ```
 
 ### 2. 编译

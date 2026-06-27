@@ -36,6 +36,9 @@ def parse_args():
     parser.add_argument('--seg',
                         action='store_true',
                         help='Build seg model by onnx')
+    parser.add_argument('--int8', action='store_true', help='Build model with int8 mode')
+    parser.add_argument('--calib-dir', type=str, default='', help='Calibration images dir')
+    parser.add_argument('--calib-cache', type=str, default='calibration.cache')
     args = parser.parse_args()
     assert len(args.input_shape) == 4
     return args
@@ -45,6 +48,9 @@ def main(args):
     builder = EngineBuilder(args.weights, args.device)
     builder.seg = args.seg
     builder.build(fp16=args.fp16,
+                  int8=args.int8,
+                  calib_dir=args.calib_dir,
+                  calib_cache=args.calib_cache,
                   input_shape=args.input_shape,
                   iou_thres=args.iou_thres,
                   conf_thres=args.conf_thres,
